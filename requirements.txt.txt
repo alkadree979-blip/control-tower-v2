@@ -4,8 +4,4 @@ numpy
 folium
 streamlit-folium
 shapely
-geopandas
-pyproj
-fiona
-rtree
 openpyxl
