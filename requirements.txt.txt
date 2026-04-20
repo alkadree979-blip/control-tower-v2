@@ -3,5 +3,5 @@ pandas
 numpy
 folium
 streamlit-folium
-shapely
+shapely==2.0.4
 openpyxl
