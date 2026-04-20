@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
 from shapely import wkt
 import folium
 from streamlit_folium import st_folium
@@ -10,7 +9,7 @@ import numpy as np
 # CONFIG
 # =========================
 st.set_page_config(layout="wide")
-st.title("🧠 AI Control Tower v4.1 (Stable)")
+st.title("🧠 AI Control Tower v2")
 
 # =========================
 # SAFE WKT
@@ -24,24 +23,29 @@ def safe_wkt(x):
         return None
 
 # =========================
-# LOAD DATA
+# LOAD DATA (FIXED SHAREPOINT)
 # =========================
 @st.cache_data
 def load_data():
-    path = r"C:\Users\anas.mohammed\Downloads\AWB Data.xlsx"
+    # IMPORTANT: must be direct download link
+    url = "https://empost.sharepoint.com/:x:/r/sites/ParcelsExpress/Empost%20Shared%20Folder/Robo%20Project/AWB%20Data.xlsx?download=1"
 
-    df = pd.read_excel(path, dtype=str)
+    df = pd.read_excel(url, dtype=str, engine="openpyxl")
+
     df.columns = df.columns.str.strip().str.lower()
 
-    # FIX DATE (from your column)
+    # FIX DATE SAFELY (ignore corrupted values like 9000099)
     if "delivery_sheet_created_date" in df.columns:
-        df["date"] = pd.to_datetime(df["delivery_sheet_created_date"], errors="coerce")
+        df["date"] = pd.to_datetime(
+            df["delivery_sheet_created_date"],
+            errors="coerce"
+        )
 
     # geometry
     df["geometry"] = df["polygon"].apply(safe_wkt)
     df = df[df["geometry"].notnull()]
 
-    return gpd.GeoDataFrame(df, geometry="geometry")
+    return df
 
 gdf = load_data()
 
@@ -56,29 +60,16 @@ st.success(f"Loaded {len(gdf)} records")
 # =========================
 st.sidebar.header("Filters")
 
-# Region
 regions = ["All"] + sorted(gdf["2gis region"].dropna().unique())
 selected_region = st.sidebar.selectbox("Region", regions)
 
-# Courier
-if "courier_id" in gdf.columns:
-    couriers = ["All"] + sorted(gdf["courier_id"].dropna().unique())
-else:
-    couriers = ["All"]
+couriers = ["All"] + sorted(gdf["courier_id"].dropna().unique()) if "courier_id" in gdf.columns else ["All"]
 selected_courier = st.sidebar.selectbox("Courier", couriers)
 
-# Day (FIXED)
-if "date" in gdf.columns:
-    days = ["All"] + sorted(gdf["date"].dt.day.dropna().unique())
-else:
-    days = ["All"]
+days = ["All"] + sorted(gdf["date"].dt.day.dropna().unique()) if "date" in gdf.columns else ["All"]
 selected_day = st.sidebar.selectbox("Day of Month", days)
 
-# Category
-if "category" in gdf.columns:
-    categories = ["All"] + sorted(gdf["category"].dropna().unique())
-else:
-    categories = ["All"]
+categories = ["All"] + sorted(gdf["category"].dropna().unique()) if "category" in gdf.columns else ["All"]
 selected_category = st.sidebar.selectbox("Category", categories)
 
 # =========================
@@ -106,15 +97,13 @@ region_kpi = df.groupby("2gis region").agg(
 ).reset_index()
 
 # =========================
-# LOG SCALE CLASSIFICATION (FIX COLOR ISSUE)
+# CLASSIFICATION
 # =========================
 region_kpi["log_shipments"] = np.log1p(region_kpi["shipments"])
-
 quantiles = region_kpi["log_shipments"].quantile([0.2, 0.4, 0.6, 0.8]).values
 
 def classify(x):
     lx = np.log1p(x)
-
     if lx <= quantiles[0]:
         return "Very Low"
     elif lx <= quantiles[1]:
@@ -128,20 +117,15 @@ def classify(x):
 
 region_kpi["status"] = region_kpi["shipments"].apply(classify)
 
-# merge back
 df = df.merge(region_kpi, on="2gis region", how="left")
 
 # =========================
 # CATEGORY KPI
 # =========================
-category_kpi = (
-    df.groupby(["2gis region", "category"])
-    .size()
-    .reset_index(name="count")
-)
+category_kpi = df.groupby(["2gis region", "category"]).size().reset_index(name="count")
 
 # =========================
-# COLORS (CLEAR GRADIENT)
+# COLORS
 # =========================
 status_colors = {
     "Very Low": "#ffffcc",
@@ -154,31 +138,28 @@ status_colors = {
 # =========================
 # MAP
 # =========================
-m = folium.Map(location=[25.2, 55.3], zoom_start=10, tiles="cartodbpositron")
+m = folium.Map(location=[25.2, 55.3], zoom_start=10)
 
 def style_fn(feature):
     region = feature["properties"]["region"]
-
     row = region_kpi[region_kpi["2gis region"] == region]
 
     if len(row) == 0:
         color = "#ccc"
     else:
-        status = row["status"].values[0]
-        color = status_colors.get(status, "#ccc")
+        color = status_colors.get(row["status"].values[0], "#ccc")
 
     return {
         "fillColor": color,
         "color": "black",
         "weight": 1,
-        "fillOpacity": 0.8
+        "fillOpacity": 0.7
     }
 
 for _, r in df.drop_duplicates("2gis region").iterrows():
     region = r["2gis region"]
     sub = df[df["2gis region"] == region]
 
-    # category breakdown
     cat_html = ""
     sub_cat = category_kpi[category_kpi["2gis region"] == region]
 
@@ -205,31 +186,7 @@ for _, r in df.drop_duplicates("2gis region").iterrows():
     geo.add_to(m)
 
 # =========================
-# LEGEND
-# =========================
-legend_html = """
-<div style="
-position: fixed;
-bottom: 50px;
-left: 50px;
-z-index:9999;
-background-color:white;
-padding:10px;
-border:2px solid grey;
-font-size:14px;
-">
-<b>Shipment Volume</b><br>
-<span style="color:#253494;">⬤</span> Very High<br>
-<span style="color:#2c7fb8;">⬤</span> High<br>
-<span style="color:#41b6c4;">⬤</span> Medium<br>
-<span style="color:#a1dab4;">⬤</span> Low<br>
-<span style="color:#ffffcc;">⬤</span> Very Low<br>
-</div>
-"""
-m.get_root().html.add_child(folium.Element(legend_html))
-
-# =========================
-# DISPLAY MAP
+# DISPLAY
 # =========================
 st.subheader("🗺️ Control Tower Map")
 st_folium(m, width=1200, height=650)
@@ -238,13 +195,12 @@ st_folium(m, width=1200, height=650)
 # KPI
 # =========================
 col1, col2, col3 = st.columns(3)
-
 col1.metric("Total Shipments", len(df))
 col2.metric("Regions", df["2gis region"].nunique())
 col3.metric("Categories", df["category"].nunique() if "category" in df.columns else 0)
 
 # =========================
-# CATEGORY CHART
+# CHART
 # =========================
 st.subheader("📊 Category Breakdown")
 
@@ -255,6 +211,4 @@ if "category" in df.columns:
 # TABLE
 # =========================
 st.subheader("📋 Data Preview")
-
-preview = df.drop(columns=["geometry"], errors="ignore")
-st.dataframe(preview.head(200))
+st.dataframe(df.head(200))
